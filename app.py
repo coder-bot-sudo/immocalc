@@ -369,6 +369,23 @@ def main() -> None:
 
     appreciation_rate = (float(appreciation_pct) / 100.0) if appreciation_enabled else 0.0
 
+    tax_shield_year = 0.0
+    afa_year = 0.0
+    if (
+        afa_enabled
+        and afa_in_cashflow
+        and building_share_pct > 0
+        and afa_rate_pct > 0
+        and tax_rate_pct > 0
+    ):
+        building_share = float(building_share_pct) / 100.0
+        afa_rate = float(afa_rate_pct) / 100.0
+        tax_rate = float(tax_rate_pct) / 100.0
+        afa_year = purchase_price_f * building_share * afa_rate
+        income_cap = float(gross_income_year) if gross_income_year > 0 else 0.0
+        taxable_base = min(afa_year, income_cap) if income_cap > 0 else 0.0
+        tax_shield_year = taxable_base * tax_rate
+
     # capital development schedules
     sched_min = amortization_schedule(
         principal=loan_f,
@@ -403,7 +420,15 @@ def main() -> None:
 
     with k4:
         st.metric("Annuität/Monat (Tilgung max)", eur(payment_month_max))
-        st.metric("Cashflow/Monat (min .. max)", f"{eur(cashflow_month_min)} .. {eur(cashflow_month_max)}")
+        if afa_enabled and afa_in_cashflow:
+            cashflow_month_min_adj = cashflow_month_min + (tax_shield_year / 12.0)
+            cashflow_month_max_adj = cashflow_month_max + (tax_shield_year / 12.0)
+            st.metric(
+                "Cashflow/Monat inkl. AfA (min .. max)",
+                f"{eur(cashflow_month_min_adj)} .. {eur(cashflow_month_max_adj)}",
+            )
+        else:
+            st.metric("Cashflow/Monat (min .. max)", f"{eur(cashflow_month_min)} .. {eur(cashflow_month_max)}")
 
     a1, a2, a3, a4 = st.columns(4)
     with a1:
@@ -587,21 +612,7 @@ def main() -> None:
             )
         )
 
-        if (
-            afa_enabled
-            and afa_in_cashflow
-            and building_share_pct > 0
-            and afa_rate_pct > 0
-            and tax_rate_pct > 0
-        ):
-            building_share = float(building_share_pct) / 100.0
-            afa_rate = float(afa_rate_pct) / 100.0
-            tax_rate = float(tax_rate_pct) / 100.0
-            afa_year = purchase_price_f * building_share * afa_rate
-            income_cap = float(gross_income_year) if gross_income_year > 0 else 0.0
-            taxable_base = min(afa_year, income_cap) if income_cap > 0 else 0.0
-            tax_shield_year = taxable_base * tax_rate
-
+        if afa_enabled and afa_in_cashflow and tax_shield_year > 0:
             cum_cf_min_tax = years_axis * (cf_year_min + tax_shield_year)
             cum_cf_max_tax = years_axis * (cf_year_max + tax_shield_year)
 
