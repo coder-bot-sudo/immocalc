@@ -277,9 +277,14 @@ def main() -> None:
     with a2:
         st.metric("€/m² (Kaufpreis / Gesamtfläche)", eur(safe_div(purchase_price_f, total_area_f)))
     with a3:
-        st.metric("Miete €/m² (Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
+        st.metric("Gesamtmiete €/m² (bez. auf Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
     with a4:
-        st.metric("Miete €/m² (Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
+        st.metric("Gesamtmiete €/m² (bez. auf Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
+
+    st.caption(
+        "Hinweis: Ohne separate Angabe der Wohn- und Gewerbemiete kann nicht sauber die reine Wohnmiete €/m² bzw. Gewerbemiete €/m² berechnet werden. "
+        "Die Kennzahl oben teilt die *Gesamtkaltmiete* durch die jeweilige Fläche."
+    )
 
     st.divider()
 
