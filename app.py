@@ -320,7 +320,15 @@ def main() -> None:
             step=1.0,
             format="%.1f",
             disabled=not afa_enabled,
-            help="Vereinfachung: Steuerwirkung = AfA × Grenzsteuersatz.",
+            help="Vereinfachung: Steuerwirkung = min(AfA, Einkommen) × Grenzsteuersatz.",
+        )
+        gross_income_year = st.number_input(
+            "Bruttoeinkommen p.a. (EUR)",
+            min_value=0.0,
+            value=0.0,
+            step=1_000.0,
+            disabled=not afa_enabled,
+            help="Vereinfachung: AfA wirkt nur bis zur Höhe des Einkommens.",
         )
 
         years = int(
@@ -564,7 +572,9 @@ def main() -> None:
             afa_rate = float(afa_rate_pct) / 100.0
             tax_rate = float(tax_rate_pct) / 100.0
             afa_year = purchase_price_f * building_share * afa_rate
-            tax_shield_year = afa_year * tax_rate
+            income_cap = float(gross_income_year) if gross_income_year > 0 else 0.0
+            taxable_base = min(afa_year, income_cap) if income_cap > 0 else 0.0
+            tax_shield_year = taxable_base * tax_rate
 
             cum_cf_min_tax = years_axis * (cf_year_min + tax_shield_year)
             cum_cf_max_tax = years_axis * (cf_year_max + tax_shield_year)
@@ -588,7 +598,8 @@ def main() -> None:
                 )
             )
             st.caption(
-                f"AfA (vereinfacht): {eur(afa_year)} p.a. | Steuerwirkung (AfA×Grenzsteuersatz): {eur(tax_shield_year)} p.a."
+                "AfA (vereinfacht): "
+                f"{eur(afa_year)} p.a. | Steuerwirkung (min(AfA, Einkommen)×Grenzsteuersatz): {eur(tax_shield_year)} p.a."
             )
 
         cashflow_title = "Kumulierter Cashflow (ohne Kosten)"
