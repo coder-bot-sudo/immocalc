@@ -1,19 +1,18 @@
 """Interactive dashboard: sweet spot between purchase price and rent.
 
-User intent (latest):
-- Show how "capital" (equity in the property via amortization) develops.
-- Remove all potential levers.
-- Only two sliders: purchase price and monthly rent.
-- A chart that updates while sliding, to find the sweet spot.
+Goal
+- Find the sweet spot between purchase price and monthly rent.
+- Show capital development via amortization (and property equity).
 
-Assumptions kept explicit and minimal:
-- Interest fixed at 4% p.a.
-- Initial repayment range fixed at 1.0% .. 1.5% p.a. (band).
-- Loan principal == purchase price (transaction costs ignored here).
-- Property value assumed constant == purchase price (no appreciation).
+Scope
+- No "potential levers" or market assumptions.
+- Parameters are editable as values (no sliders required).
 
-Run:
-    /home/q621247/workspace/aws-log-uploader/.venv/bin/streamlit run tool/immobilie_dashboard.py
+Notes
+- This is a simplified model (no operating costs, vacancy, taxes).
+
+Run
+    streamlit run app.py
 """
 
 from __future__ import annotations
@@ -54,6 +53,7 @@ def amortization_schedule(
     principal: float,
     interest: float,
     initial_repayment: float,
+    property_value: float,
     years: int,
 ) -> pd.DataFrame:
     payment = annuity_month(principal, interest, initial_repayment)
@@ -64,8 +64,17 @@ def amortization_schedule(
 
     for m in range(months + 1):
         year = m / 12.0
-        equity = principal - remaining
-        rows.append({"year": year, "remaining_debt": remaining, "equity": equity, "payment": payment})
+        amortized_equity = principal - remaining
+        property_equity = property_value - remaining
+        rows.append(
+            {
+                "year": year,
+                "remaining_debt": remaining,
+                "amortized_equity": amortized_equity,
+                "property_equity": property_equity,
+                "payment": payment,
+            }
+        )
 
         if m == months:
             break
@@ -82,7 +91,15 @@ def amortization_schedule(
             # Fully repaid early: pad remaining months with zeros.
             for mm in range(m + 1, months + 1):
                 year2 = mm / 12.0
-                rows.append({"year": year2, "remaining_debt": 0.0, "equity": principal, "payment": payment})
+                rows.append(
+                    {
+                        "year": year2,
+                        "remaining_debt": 0.0,
+                        "amortized_equity": principal,
+                        "property_equity": property_value,
+                        "payment": payment,
+                    }
+                )
             break
 
     return pd.DataFrame(rows)
@@ -93,44 +110,62 @@ def main() -> None:
 
     DEFAULT_PRICE = 1_190_000.0
     DEFAULT_RENT = 3_626.0
-    INTEREST = 0.04
-    TILGUNG_MIN = 0.01
-    TILGUNG_MAX = 0.015
+    DEFAULT_INTEREST = 0.04
+    DEFAULT_TILGUNG_MIN = 0.01
+    DEFAULT_TILGUNG_MAX = 0.015
+    DEFAULT_LIVING_AREA = 370.0
+    DEFAULT_TOTAL_AREA = 520.0
 
     st.title("Sweet Spot: Kaufpreis ↔ Miete (Kapitalentwicklung durch Tilgung)")
     st.caption(
-        "Nur zwei Slider. Annahmen: 4% Zins p.a., Tilgung 1,0%–1,5% p.a., Darlehen = Kaufpreis, Objektwert konstant = Kaufpreis (keine Wertsteigerung)."
+        "Vereinfachtes Modell ohne Kosten/Steuern: du kannst Kaufpreis, Miete, Zins, Tilgung (Min/Max), Flächen und optional das Darlehen direkt als Werte ändern."
     )
 
     with st.sidebar:
-        st.header("Parameter")
-        purchase_price = st.slider(
-            "Kaufpreis (EUR)",
-            min_value=100_000,
-            max_value=3_000_000,
-            value=int(DEFAULT_PRICE),
-            step=10_000,
+        st.header("Inputs")
+        purchase_price = st.number_input("Kaufpreis (EUR)", min_value=0.0, value=DEFAULT_PRICE, step=10_000.0)
+        rent_cold_month = st.number_input("Kaltmiete (EUR/Monat)", min_value=0.0, value=DEFAULT_RENT, step=50.0)
+
+        st.subheader("Finanzierung")
+        interest = st.number_input("Sollzins p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_INTEREST, step=0.0005, format="%.4f")
+        tilgung_min = st.number_input(
+            "Tilgung min p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_TILGUNG_MIN, step=0.0005, format="%.4f"
         )
-        rent_cold_month = st.slider(
-            "Kaltmiete (EUR/Monat)",
-            min_value=0,
-            max_value=12_000,
-            value=int(DEFAULT_RENT),
-            step=50,
+        tilgung_max = st.number_input(
+            "Tilgung max p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_TILGUNG_MAX, step=0.0005, format="%.4f"
+        )
+        loan = st.number_input(
+            "Darlehen (EUR)",
+            min_value=0.0,
+            value=float(purchase_price),
+            step=10_000.0,
+            help="Default = Kaufpreis. Wenn kleiner, entspricht das Eigenkapital im Objekt (vereinfachend).",
         )
 
-        st.caption("Fix: Zins 4% p.a. | Tilgung 1,0%–1,5% p.a. | Darlehen=Kaufpreis")
+        st.subheader("Größe")
+        living_area = st.number_input("Wohnfläche (m²)", min_value=0.0, value=DEFAULT_LIVING_AREA, step=5.0)
+        total_area = st.number_input("Gesamtfläche (m²)", min_value=0.0, value=DEFAULT_TOTAL_AREA, step=5.0)
 
-        years = st.slider("Zeithorizont (Jahre)", min_value=5, max_value=40, value=30, step=1)
+        years = int(
+            st.number_input("Zeithorizont (Jahre)", min_value=1, max_value=60, value=30, step=1)
+        )
+
+        if tilgung_min > tilgung_max:
+            st.warning("Tilgung min ist größer als Tilgung max – ich tausche intern die Werte.")
 
     # --- Core computations (minimal) ---
     purchase_price_f = float(purchase_price)
     rent_month_f = float(rent_cold_month)
+    interest_f = float(interest)
+    t_min = float(min(tilgung_min, tilgung_max))
+    t_max = float(max(tilgung_min, tilgung_max))
+    loan_f = float(loan)
+    living_area_f = float(living_area)
+    total_area_f = float(total_area)
     rent_year = rent_month_f * 12.0
 
-    loan = purchase_price_f
-    payment_month_min = annuity_month(loan, INTEREST, TILGUNG_MIN)
-    payment_month_max = annuity_month(loan, INTEREST, TILGUNG_MAX)
+    payment_month_min = annuity_month(loan_f, interest_f, t_min)
+    payment_month_max = annuity_month(loan_f, interest_f, t_max)
 
     gross_yield = safe_div(rent_year, purchase_price_f)
     grm = safe_div(purchase_price_f, rent_year)
@@ -139,14 +174,26 @@ def main() -> None:
     cashflow_month_max = rent_month_f - payment_month_max
 
     # capital development schedules
-    sched_min = amortization_schedule(principal=loan, interest=INTEREST, initial_repayment=TILGUNG_MIN, years=years)
-    sched_max = amortization_schedule(principal=loan, interest=INTEREST, initial_repayment=TILGUNG_MAX, years=years)
+    sched_min = amortization_schedule(
+        principal=loan_f,
+        interest=interest_f,
+        initial_repayment=t_min,
+        property_value=purchase_price_f,
+        years=years,
+    )
+    sched_max = amortization_schedule(
+        principal=loan_f,
+        interest=interest_f,
+        initial_repayment=t_max,
+        property_value=purchase_price_f,
+        years=years,
+    )
 
     # --- Layout ---
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Kaufpreis", eur(purchase_price_f))
-        st.metric("Darlehen (vereinfachend)", eur(loan))
+        st.metric("Darlehen", eur(loan_f))
 
     with k2:
         st.metric("Miete/Monat", eur(rent_month_f))
@@ -154,11 +201,21 @@ def main() -> None:
 
     with k3:
         st.metric("Faktor (Kaufpreis / Jahresmiete)", f"{grm:.2f}" if not math.isnan(grm) else "–")
-        st.metric("Annuität/Monat (Tilgung 1,0%)", eur(payment_month_min))
+        st.metric("Annuität/Monat (Tilgung min)", eur(payment_month_min))
 
     with k4:
-        st.metric("Annuität/Monat (Tilgung 1,5%)", eur(payment_month_max))
-        st.metric("Cashflow/Monat (1,0% .. 1,5%)", f"{eur(cashflow_month_min)} .. {eur(cashflow_month_max)}")
+        st.metric("Annuität/Monat (Tilgung max)", eur(payment_month_max))
+        st.metric("Cashflow/Monat (min .. max)", f"{eur(cashflow_month_min)} .. {eur(cashflow_month_max)}")
+
+    a1, a2, a3, a4 = st.columns(4)
+    with a1:
+        st.metric("€/m² (Kaufpreis / Wohnfläche)", eur(safe_div(purchase_price_f, living_area_f)))
+    with a2:
+        st.metric("€/m² (Kaufpreis / Gesamtfläche)", eur(safe_div(purchase_price_f, total_area_f)))
+    with a3:
+        st.metric("Miete €/m² (Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
+    with a4:
+        st.metric("Miete €/m² (Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
 
     st.divider()
 
@@ -166,11 +223,13 @@ def main() -> None:
 
     with left:
         st.subheader("Sweet-Spot-Diagramm: erforderliche Miete vs. Kaufpreis")
-        st.caption("Band = Break-even-Miete (Miete = Annuität) bei 4% Zins und 1,0%–1,5% Tilgung.")
+        st.caption("Band = Break-even-Miete (Miete = Annuität) bei deinem Zins und deiner Tilgung (min..max).")
 
         price_grid = pd.Series(range(100_000, 3_000_001, 25_000), name="price").astype(float)
-        req_rent_min = (price_grid * (INTEREST + TILGUNG_MIN) / 12.0).astype(float)
-        req_rent_max = (price_grid * (INTEREST + TILGUNG_MAX) / 12.0).astype(float)
+        loan_ratio = safe_div(loan_f, purchase_price_f)
+        loan_grid = (price_grid * loan_ratio).astype(float)
+        req_rent_min = (loan_grid * (interest_f + t_min) / 12.0).astype(float)
+        req_rent_max = (loan_grid * (interest_f + t_max) / 12.0).astype(float)
 
         fig = go.Figure()
         fig.add_trace(
@@ -178,7 +237,7 @@ def main() -> None:
                 x=price_grid,
                 y=req_rent_min,
                 mode="lines",
-                name="Break-even (Tilgung 1,0%)",
+                name="Break-even (Tilgung min)",
             )
         )
         fig.add_trace(
@@ -186,7 +245,7 @@ def main() -> None:
                 x=price_grid,
                 y=req_rent_max,
                 mode="lines",
-                name="Break-even (Tilgung 1,5%)",
+                name="Break-even (Tilgung max)",
                 fill="tonexty",
             )
         )
@@ -208,16 +267,16 @@ def main() -> None:
 
         # Quick interpretation
         if rent_month_f >= payment_month_max:
-            st.success("Bei 1,5% Tilgung ist die Miete >= Annuität (vereinfachtes Break-even erreicht).")
+            st.success("Miete >= Annuität (auch bei Tilgung max): vereinfachtes Break-even erreicht.")
         elif rent_month_f >= payment_month_min:
-            st.warning("Bei 1,0% Tilgung Break-even, bei 1,5% noch darunter.")
+            st.warning("Bei Tilgung min Break-even, bei Tilgung max noch darunter.")
         else:
-            st.error("Miete liegt unter der Annuität (auch bei 1,0% Tilgung).")
+            st.error("Miete liegt unter der Annuität (auch bei Tilgung min).")
 
     with right:
         st.subheader("Kapitalentwicklung (Eigenkapital durch Tilgung)")
         st.caption(
-            "Eigenkapital = Kaufpreis − Restschuld (Objektwert konstant). Zusätzlich: kumulierter Cashflow aus Miete − Annuität (ohne Kosten)."
+            "Property-Equity = Kaufpreis − Restschuld (Objektwert konstant). Zusätzlich: kumulierter Cashflow aus Miete − Annuität (ohne Kosten)."
         )
 
         # Time series: equity + debt
@@ -227,7 +286,7 @@ def main() -> None:
                 x=sched_min["year"],
                 y=sched_min["remaining_debt"],
                 mode="lines",
-                name="Restschuld (Tilgung 1,0%)",
+                name="Restschuld (Tilgung min)",
             )
         )
         fig2.add_trace(
@@ -235,23 +294,23 @@ def main() -> None:
                 x=sched_max["year"],
                 y=sched_max["remaining_debt"],
                 mode="lines",
-                name="Restschuld (Tilgung 1,5%)",
+                name="Restschuld (Tilgung max)",
             )
         )
         fig2.add_trace(
             go.Scatter(
                 x=sched_min["year"],
-                y=sched_min["equity"],
+                y=sched_min["property_equity"],
                 mode="lines",
-                name="Eigenkapital (Tilgung 1,0%)",
+                name="Property-Equity (Tilgung min)",
             )
         )
         fig2.add_trace(
             go.Scatter(
                 x=sched_max["year"],
-                y=sched_max["equity"],
+                y=sched_max["property_equity"],
                 mode="lines",
-                name="Eigenkapital (Tilgung 1,5%)",
+                name="Property-Equity (Tilgung max)",
             )
         )
         fig2.update_layout(xaxis_title="Jahre", yaxis_title="EUR")
