@@ -123,19 +123,71 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Inputs")
-        purchase_price = st.slider(
+        # --- Kaufpreis: Slider + Direkteingabe (synchron) ---
+        if "purchase_price_slider" not in st.session_state:
+            st.session_state.purchase_price_slider = int(DEFAULT_PRICE)
+        if "purchase_price_num" not in st.session_state:
+            st.session_state.purchase_price_num = float(DEFAULT_PRICE)
+
+        def _sync_price_from_slider() -> None:
+            st.session_state.purchase_price_num = float(st.session_state.purchase_price_slider)
+
+        def _sync_price_from_num() -> None:
+            v = float(st.session_state.purchase_price_num)
+            v = min(3_000_000.0, max(100_000.0, v))
+            # round to slider step
+            v = round(v / 10_000.0) * 10_000.0
+            st.session_state.purchase_price_num = v
+            st.session_state.purchase_price_slider = int(v)
+
+        st.slider(
             "Kaufpreis (EUR)",
             min_value=100_000,
             max_value=3_000_000,
-            value=int(DEFAULT_PRICE),
             step=10_000,
+            key="purchase_price_slider",
+            on_change=_sync_price_from_slider,
         )
-        rent_cold_month = st.slider(
+        st.number_input(
+            "Kaufpreis (direkt) (EUR)",
+            min_value=100_000.0,
+            max_value=3_000_000.0,
+            step=10_000.0,
+            key="purchase_price_num",
+            on_change=_sync_price_from_num,
+        )
+
+        # --- Miete: Slider + Direkteingabe (synchron) ---
+        if "rent_slider" not in st.session_state:
+            st.session_state.rent_slider = int(DEFAULT_RENT)
+        if "rent_num" not in st.session_state:
+            st.session_state.rent_num = float(DEFAULT_RENT)
+
+        def _sync_rent_from_slider() -> None:
+            st.session_state.rent_num = float(st.session_state.rent_slider)
+
+        def _sync_rent_from_num() -> None:
+            v = float(st.session_state.rent_num)
+            v = min(12_000.0, max(0.0, v))
+            v = round(v / 50.0) * 50.0
+            st.session_state.rent_num = v
+            st.session_state.rent_slider = int(v)
+
+        st.slider(
             "Kaltmiete (EUR/Monat)",
             min_value=0,
             max_value=12_000,
-            value=int(DEFAULT_RENT),
             step=50,
+            key="rent_slider",
+            on_change=_sync_rent_from_slider,
+        )
+        st.number_input(
+            "Kaltmiete (direkt) (EUR/Monat)",
+            min_value=0.0,
+            max_value=12_000.0,
+            step=50.0,
+            key="rent_num",
+            on_change=_sync_rent_from_num,
         )
 
         st.subheader("Finanzierung")
@@ -149,7 +201,7 @@ def main() -> None:
         loan = st.number_input(
             "Darlehen (EUR)",
             min_value=0.0,
-            value=float(purchase_price),
+            value=float(st.session_state.purchase_price_num),
             step=10_000.0,
             help="Default = Kaufpreis. Wenn kleiner, entspricht das Eigenkapital im Objekt (vereinfachend).",
         )
@@ -166,8 +218,8 @@ def main() -> None:
             st.warning("Tilgung min ist größer als Tilgung max – ich tausche intern die Werte.")
 
     # --- Core computations (minimal) ---
-    purchase_price_f = float(purchase_price)
-    rent_month_f = float(rent_cold_month)
+    purchase_price_f = float(st.session_state.purchase_price_num)
+    rent_month_f = float(st.session_state.rent_num)
     interest_f = float(interest)
     t_min = float(min(tilgung_min, tilgung_max))
     t_max = float(max(tilgung_min, tilgung_max))
