@@ -6,10 +6,10 @@ Goal
 
 Scope
 - No "potential levers" or market assumptions.
-- Parameters are editable as values (no sliders required).
+- Parameters are editable; Kaufpreis/Miete can be adjusted quickly.
 
 Notes
-- This is a simplified model (no operating costs, vacancy, taxes).
+- This is a simplified model (no operating costs, vacancy). Tax/valuation options are simplified.
 
 Run
     streamlit run app.py
@@ -54,6 +54,7 @@ def amortization_schedule(
     interest: float,
     initial_repayment: float,
     property_value: float,
+    appreciation_rate: float,
     years: int,
 ) -> pd.DataFrame:
     payment = annuity_month(principal, interest, initial_repayment)
@@ -64,14 +65,16 @@ def amortization_schedule(
 
     for m in range(months + 1):
         year = m / 12.0
+        current_property_value = property_value * ((1.0 + appreciation_rate) ** year)
         amortized_equity = principal - remaining
-        property_equity = property_value - remaining
+        property_equity = current_property_value - remaining
         rows.append(
             {
                 "year": year,
                 "remaining_debt": remaining,
                 "amortized_equity": amortized_equity,
                 "property_equity": property_equity,
+                "property_value": current_property_value,
                 "payment": payment,
             }
         )
@@ -91,12 +94,14 @@ def amortization_schedule(
             # Fully repaid early: pad remaining months with zeros.
             for mm in range(m + 1, months + 1):
                 year2 = mm / 12.0
+                current_property_value2 = property_value * ((1.0 + appreciation_rate) ** year2)
                 rows.append(
                     {
                         "year": year2,
                         "remaining_debt": 0.0,
                         "amortized_equity": principal,
-                        "property_equity": property_value,
+                        "property_equity": current_property_value2,
+                        "property_value": current_property_value2,
                         "payment": payment,
                     }
                 )
@@ -110,9 +115,9 @@ def main() -> None:
 
     DEFAULT_PRICE = 1_190_000.0
     DEFAULT_RENT = 3_626.0
-    DEFAULT_INTEREST = 0.04
-    DEFAULT_TILGUNG_MIN = 0.01
-    DEFAULT_TILGUNG_MAX = 0.015
+    DEFAULT_INTEREST_PCT = 4.0
+    DEFAULT_TILGUNG_MIN_PCT = 1.0
+    DEFAULT_TILGUNG_MAX_PCT = 1.5
     DEFAULT_LIVING_AREA = 370.0
     DEFAULT_COMMERCIAL_AREA = 150.0
 
@@ -243,12 +248,29 @@ def main() -> None:
             st.info(f"Berechnete Gesamtmiete: {eur(rent_total_calc)} / Monat")
 
         st.subheader("Finanzierung")
-        interest = st.number_input("Sollzins p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_INTEREST, step=0.0005, format="%.4f")
-        tilgung_min = st.number_input(
-            "Tilgung min p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_TILGUNG_MIN, step=0.0005, format="%.4f"
+        interest_pct = st.number_input(
+            "Sollzins p.a. (%)",
+            min_value=0.0,
+            max_value=25.0,
+            value=DEFAULT_INTEREST_PCT,
+            step=0.05,
+            format="%.2f",
         )
-        tilgung_max = st.number_input(
-            "Tilgung max p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_TILGUNG_MAX, step=0.0005, format="%.4f"
+        tilgung_min_pct = st.number_input(
+            "Tilgung min p.a. (%)",
+            min_value=0.0,
+            max_value=25.0,
+            value=DEFAULT_TILGUNG_MIN_PCT,
+            step=0.05,
+            format="%.2f",
+        )
+        tilgung_max_pct = st.number_input(
+            "Tilgung max p.a. (%)",
+            min_value=0.0,
+            max_value=25.0,
+            value=DEFAULT_TILGUNG_MAX_PCT,
+            step=0.05,
+            format="%.2f",
         )
         loan = st.number_input(
             "Darlehen (EUR)",
@@ -258,11 +280,54 @@ def main() -> None:
             help="Default = Kaufpreis. Wenn kleiner, entspricht das Eigenkapital im Objekt (vereinfachend).",
         )
 
+        st.subheader("Erweiterte Optionen")
+        appreciation_enabled = st.toggle("Wertsteigerung aktivieren", value=False)
+        appreciation_pct = st.number_input(
+            "Wertsteigerung p.a. (%)",
+            min_value=-20.0,
+            max_value=20.0,
+            value=0.0,
+            step=0.1,
+            format="%.2f",
+            disabled=not appreciation_enabled,
+        )
+
+        afa_enabled = st.toggle("Steuerliche Abschreibung (AfA) aktivieren", value=False)
+        building_share_pct = st.number_input(
+            "Gebäudeanteil am Kaufpreis (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=0.0,
+            step=1.0,
+            format="%.1f",
+            disabled=not afa_enabled,
+            help="Vereinfachung: AfA-Basis = Kaufpreis × Gebäudeanteil.",
+        )
+        afa_rate_pct = st.number_input(
+            "AfA-Satz p.a. (%)",
+            min_value=0.0,
+            max_value=10.0,
+            value=0.0,
+            step=0.1,
+            format="%.2f",
+            disabled=not afa_enabled,
+        )
+        tax_rate_pct = st.number_input(
+            "Grenzsteuersatz (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=0.0,
+            step=1.0,
+            format="%.1f",
+            disabled=not afa_enabled,
+            help="Vereinfachung: Steuerwirkung = AfA × Grenzsteuersatz.",
+        )
+
         years = int(
             st.number_input("Zeithorizont (Jahre)", min_value=1, max_value=60, value=30, step=1)
         )
 
-        if tilgung_min > tilgung_max:
+        if tilgung_min_pct > tilgung_max_pct:
             st.warning("Tilgung min ist größer als Tilgung max – ich tausche intern die Werte.")
 
     # --- Core computations (minimal) ---
@@ -271,9 +336,9 @@ def main() -> None:
         rent_month_f = float(st.session_state.get("rent_total_calc", 0.0))
     else:
         rent_month_f = float(st.session_state.rent_num)
-    interest_f = float(interest)
-    t_min = float(min(tilgung_min, tilgung_max))
-    t_max = float(max(tilgung_min, tilgung_max))
+    interest_f = float(interest_pct) / 100.0
+    t_min = float(min(tilgung_min_pct, tilgung_max_pct)) / 100.0
+    t_max = float(max(tilgung_min_pct, tilgung_max_pct)) / 100.0
     loan_f = float(loan)
     living_area_f = float(living_area)
     commercial_area_f = float(commercial_area)
@@ -289,12 +354,15 @@ def main() -> None:
     cashflow_month_min = rent_month_f - payment_month_min
     cashflow_month_max = rent_month_f - payment_month_max
 
+    appreciation_rate = (float(appreciation_pct) / 100.0) if appreciation_enabled else 0.0
+
     # capital development schedules
     sched_min = amortization_schedule(
         principal=loan_f,
         interest=interest_f,
         initial_repayment=t_min,
         property_value=purchase_price_f,
+        appreciation_rate=appreciation_rate,
         years=years,
     )
     sched_max = amortization_schedule(
@@ -302,6 +370,7 @@ def main() -> None:
         interest=interest_f,
         initial_repayment=t_max,
         property_value=purchase_price_f,
+        appreciation_rate=appreciation_rate,
         years=years,
     )
 
@@ -409,9 +478,14 @@ def main() -> None:
 
     with right:
         st.subheader("Kapitalentwicklung (Eigenkapital durch Tilgung)")
-        st.caption(
-            "Property-Equity = Kaufpreis − Restschuld (Objektwert konstant). Zusätzlich: kumulierter Cashflow aus Miete − Annuität (ohne Kosten)."
-        )
+        if appreciation_enabled:
+            st.caption(
+                "Property-Equity = Objektwert (inkl. Wertsteigerung) − Restschuld. Zusätzlich: kumulierter Cashflow aus Miete − Annuität (ohne Kosten)."
+            )
+        else:
+            st.caption(
+                "Property-Equity = Objektwert − Restschuld. Zusätzlich: kumulierter Cashflow aus Miete − Annuität (ohne Kosten)."
+            )
 
         # Time series: equity + debt
         fig2 = go.Figure()
@@ -447,6 +521,16 @@ def main() -> None:
                 name="Property-Equity (Tilgung max)",
             )
         )
+        if appreciation_enabled:
+            fig2.add_trace(
+                go.Scatter(
+                    x=sched_min["year"],
+                    y=sched_min["property_value"],
+                    mode="lines",
+                    name="Objektwert",
+                    line=dict(dash="dot"),
+                )
+            )
         fig2.update_layout(xaxis_title="Jahre", yaxis_title="EUR")
         st.plotly_chart(fig2, width="stretch")
 
@@ -458,9 +542,59 @@ def main() -> None:
         cum_cf_max = years_axis * cf_year_max
 
         fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(x=years_axis, y=cum_cf_min, mode="lines", name="Kum. Cashflow (Tilgung 1,0%)"))
-        fig3.add_trace(go.Scatter(x=years_axis, y=cum_cf_max, mode="lines", name="Kum. Cashflow (Tilgung 1,5%)"))
-        fig3.update_layout(xaxis_title="Jahre", yaxis_title="EUR", title="Kumulierter Cashflow (ohne Kosten)")
+        fig3.add_trace(
+            go.Scatter(
+                x=years_axis,
+                y=cum_cf_min,
+                mode="lines",
+                name=f"Kum. Cashflow (Tilgung min {t_min*100:.2f}%)",
+            )
+        )
+        fig3.add_trace(
+            go.Scatter(
+                x=years_axis,
+                y=cum_cf_max,
+                mode="lines",
+                name=f"Kum. Cashflow (Tilgung max {t_max*100:.2f}%)",
+            )
+        )
+
+        if afa_enabled and building_share_pct > 0 and afa_rate_pct > 0 and tax_rate_pct > 0:
+            building_share = float(building_share_pct) / 100.0
+            afa_rate = float(afa_rate_pct) / 100.0
+            tax_rate = float(tax_rate_pct) / 100.0
+            afa_year = purchase_price_f * building_share * afa_rate
+            tax_shield_year = afa_year * tax_rate
+
+            cum_cf_min_tax = years_axis * (cf_year_min + tax_shield_year)
+            cum_cf_max_tax = years_axis * (cf_year_max + tax_shield_year)
+
+            fig3.add_trace(
+                go.Scatter(
+                    x=years_axis,
+                    y=cum_cf_min_tax,
+                    mode="lines",
+                    name=f"Kum. Cashflow inkl. AfA (Tilgung min)",
+                    line=dict(dash="dot"),
+                )
+            )
+            fig3.add_trace(
+                go.Scatter(
+                    x=years_axis,
+                    y=cum_cf_max_tax,
+                    mode="lines",
+                    name=f"Kum. Cashflow inkl. AfA (Tilgung max)",
+                    line=dict(dash="dot"),
+                )
+            )
+            st.caption(
+                f"AfA (vereinfacht): {eur(afa_year)} p.a. | Steuerwirkung (AfA×Grenzsteuersatz): {eur(tax_shield_year)} p.a."
+            )
+
+        cashflow_title = "Kumulierter Cashflow (ohne Kosten)"
+        if afa_enabled:
+            cashflow_title = "Kumulierter Cashflow (ohne Kosten; AfA optional)"
+        fig3.update_layout(xaxis_title="Jahre", yaxis_title="EUR", title=cashflow_title)
         st.plotly_chart(fig3, width="stretch")
 
 
