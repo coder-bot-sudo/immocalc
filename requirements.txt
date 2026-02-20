@@ -1,0 +1,9 @@
+streamlit>=1.41
+plotly>=5.22
+pandas>=2.2
+
+# Optional helper scripts
+numpy>=2.0
+matplotlib>=3.8
+XlsxWriter>=3.2
+pypdf>=5.0
