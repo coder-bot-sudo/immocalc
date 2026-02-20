@@ -405,10 +405,25 @@ def main() -> None:
         st.metric("€/m² (Kaufpreis / Wohnfläche)", eur(safe_div(purchase_price_f, living_area_f)))
     with a2:
         st.metric("€/m² (Kaufpreis / Gesamtfläche)", eur(safe_div(purchase_price_f, total_area_f)))
-    with a3:
-        st.metric("Gesamtmiete €/m² (bez. auf Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
-    with a4:
-        st.metric("Gesamtmiete €/m² (bez. auf Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
+
+    if st.session_state.get("rent_mode", "total") == "sqm":
+        rent_res_sqm = float(st.session_state.get("rent_res_sqm", 0.0))
+        rent_com_sqm = float(st.session_state.get("rent_com_sqm", 0.0))
+        rent_weighted = safe_div(rent_month_f, total_area_f)
+        with a3:
+            st.metric("Miete Wohnen (EUR/m²)", eur(rent_res_sqm))
+        with a4:
+            if commercial_area_f > 0:
+                st.metric("Miete Gewerbe (EUR/m²)", eur(rent_com_sqm))
+            else:
+                st.metric("Miete gesamt (gewichtet) EUR/m²", eur(rent_weighted))
+        if commercial_area_f > 0:
+            st.caption(f"Gesamtmiete gewichtet: {eur(rent_weighted)} / m²")
+    else:
+        with a3:
+            st.metric("Gesamtmiete €/m² (bez. auf Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
+        with a4:
+            st.metric("Gesamtmiete €/m² (bez. auf Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
 
     if commercial_area_f > 0:
         b1, b2, b3, b4 = st.columns(4)
