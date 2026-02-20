@@ -114,7 +114,7 @@ def main() -> None:
     DEFAULT_TILGUNG_MIN = 0.01
     DEFAULT_TILGUNG_MAX = 0.015
     DEFAULT_LIVING_AREA = 370.0
-    DEFAULT_TOTAL_AREA = 520.0
+    DEFAULT_COMMERCIAL_AREA = 150.0
 
     st.title("Sweet Spot: Kaufpreis ↔ Miete (Kapitalentwicklung durch Tilgung)")
     st.caption(
@@ -180,6 +180,7 @@ def main() -> None:
             step=50,
             key="rent_slider",
             on_change=_sync_rent_from_slider,
+            disabled=bool(st.session_state.get("rent_mode", "total") == "sqm"),
         )
         st.number_input(
             "Kaltmiete (direkt) (EUR/Monat)",
@@ -188,7 +189,60 @@ def main() -> None:
             step=50.0,
             key="rent_num",
             on_change=_sync_rent_from_num,
+            disabled=bool(st.session_state.get("rent_mode", "total") == "sqm"),
         )
+
+        st.subheader("Flächen")
+        living_area = st.number_input("Wohnfläche (m²)", min_value=0.0, value=DEFAULT_LIVING_AREA, step=5.0)
+        has_commercial = st.toggle("Gewerbefläche vorhanden", value=True)
+        commercial_area = 0.0
+        if has_commercial:
+            commercial_area = st.number_input("Gewerbefläche (m²)", min_value=0.0, value=DEFAULT_COMMERCIAL_AREA, step=5.0)
+        total_area = float(living_area) + float(commercial_area)
+        st.caption(f"Gesamtfläche (berechnet): {total_area:.0f} m²")
+
+        st.subheader("Mieteingabe")
+        rent_mode = st.radio(
+            "Modus",
+            options=["Gesamtmiete", "€/m² (Wohnen/Gewerbe)"],
+            index=0,
+            key="rent_mode_ui",
+            help="Wenn du €/m² wählst, wird die Gesamtmiete aus Flächen × €/m² berechnet.",
+        )
+        # Keep a simple internal flag to avoid string comparisons everywhere
+        st.session_state.rent_mode = "sqm" if rent_mode.startswith("€/m²") else "total"
+
+        if st.session_state.rent_mode == "sqm":
+            # Initialize defaults to keep consistency with the current total rent without inventing a split.
+            if "rent_res_sqm" not in st.session_state or "rent_com_sqm" not in st.session_state:
+                fallback = safe_div(float(st.session_state.rent_num), total_area) if total_area > 0 else 0.0
+                st.session_state.rent_res_sqm = float(fallback)
+                st.session_state.rent_com_sqm = float(fallback)
+
+            rent_res_sqm = st.number_input(
+                "Wohnmiete (EUR/m²/Monat)",
+                min_value=0.0,
+                value=float(st.session_state.rent_res_sqm),
+                step=0.1,
+                format="%.2f",
+                key="rent_res_sqm",
+            )
+            rent_com_sqm = 0.0
+            if has_commercial:
+                rent_com_sqm = st.number_input(
+                    "Gewerbemiete (EUR/m²/Monat)",
+                    min_value=0.0,
+                    value=float(st.session_state.rent_com_sqm),
+                    step=0.1,
+                    format="%.2f",
+                    key="rent_com_sqm",
+                )
+
+            rent_total_calc = float(living_area) * float(rent_res_sqm) + float(commercial_area) * float(rent_com_sqm)
+            # Update the total rent state so the rest of the app uses the computed rent.
+            st.session_state.rent_num = float(rent_total_calc)
+            st.session_state.rent_slider = int(round(rent_total_calc / 50.0) * 50.0)
+            st.info(f"Berechnete Gesamtmiete: {eur(rent_total_calc)} / Monat")
 
         st.subheader("Finanzierung")
         interest = st.number_input("Sollzins p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_INTEREST, step=0.0005, format="%.4f")
@@ -206,10 +260,6 @@ def main() -> None:
             help="Default = Kaufpreis. Wenn kleiner, entspricht das Eigenkapital im Objekt (vereinfachend).",
         )
 
-        st.subheader("Größe")
-        living_area = st.number_input("Wohnfläche (m²)", min_value=0.0, value=DEFAULT_LIVING_AREA, step=5.0)
-        total_area = st.number_input("Gesamtfläche (m²)", min_value=0.0, value=DEFAULT_TOTAL_AREA, step=5.0)
-
         years = int(
             st.number_input("Zeithorizont (Jahre)", min_value=1, max_value=60, value=30, step=1)
         )
@@ -225,6 +275,7 @@ def main() -> None:
     t_max = float(max(tilgung_min, tilgung_max))
     loan_f = float(loan)
     living_area_f = float(living_area)
+    commercial_area_f = float(commercial_area)
     total_area_f = float(total_area)
     rent_year = rent_month_f * 12.0
 
@@ -280,6 +331,19 @@ def main() -> None:
         st.metric("Gesamtmiete €/m² (bez. auf Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
     with a4:
         st.metric("Gesamtmiete €/m² (bez. auf Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
+
+    if commercial_area_f > 0:
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            st.metric("Wohnfläche (m²)", f"{living_area_f:.0f}")
+        with b2:
+            st.metric("Gewerbefläche (m²)", f"{commercial_area_f:.0f}")
+        with b3:
+            st.metric("Gesamtfläche (m²)", f"{total_area_f:.0f}")
+        with b4:
+            st.metric("Gewerbe aktiv", "Ja")
+    else:
+        st.caption("Gewerbefläche ist deaktiviert (Toggle links).")
 
     st.caption(
         "Hinweis: Ohne separate Angabe der Wohn- und Gewerbemiete kann nicht sauber die reine Wohnmiete €/m² bzw. Gewerbemiete €/m² berechnet werden. "
