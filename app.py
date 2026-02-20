@@ -293,6 +293,11 @@ def main() -> None:
         )
 
         afa_enabled = st.toggle("Steuerliche Abschreibung (AfA) aktivieren", value=False)
+        afa_in_cashflow = st.toggle(
+            "AfA in Cashflow einrechnen",
+            value=False,
+            disabled=not afa_enabled,
+        )
         building_share_pct = st.number_input(
             "Gebäudeanteil am Kaufpreis (%)",
             min_value=0.0,
@@ -582,7 +587,13 @@ def main() -> None:
             )
         )
 
-        if afa_enabled and building_share_pct > 0 and afa_rate_pct > 0 and tax_rate_pct > 0:
+        if (
+            afa_enabled
+            and afa_in_cashflow
+            and building_share_pct > 0
+            and afa_rate_pct > 0
+            and tax_rate_pct > 0
+        ):
             building_share = float(building_share_pct) / 100.0
             afa_rate = float(afa_rate_pct) / 100.0
             tax_rate = float(tax_rate_pct) / 100.0
@@ -618,7 +629,7 @@ def main() -> None:
             )
 
         cashflow_title = "Kumulierter Cashflow (ohne Kosten)"
-        if afa_enabled:
+        if afa_enabled and afa_in_cashflow:
             cashflow_title = "Kumulierter Cashflow (ohne Kosten; AfA optional)"
         fig3.update_layout(xaxis_title="Jahre", yaxis_title="EUR", title=cashflow_title)
         st.plotly_chart(fig3, width="stretch")
