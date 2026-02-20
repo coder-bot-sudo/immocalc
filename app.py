@@ -123,8 +123,20 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Inputs")
-        purchase_price = st.number_input("Kaufpreis (EUR)", min_value=0.0, value=DEFAULT_PRICE, step=10_000.0)
-        rent_cold_month = st.number_input("Kaltmiete (EUR/Monat)", min_value=0.0, value=DEFAULT_RENT, step=50.0)
+        purchase_price = st.slider(
+            "Kaufpreis (EUR)",
+            min_value=100_000,
+            max_value=3_000_000,
+            value=int(DEFAULT_PRICE),
+            step=10_000,
+        )
+        rent_cold_month = st.slider(
+            "Kaltmiete (EUR/Monat)",
+            min_value=0,
+            max_value=12_000,
+            value=int(DEFAULT_RENT),
+            step=50,
+        )
 
         st.subheader("Finanzierung")
         interest = st.number_input("Sollzins p.a.", min_value=0.0, max_value=0.25, value=DEFAULT_INTEREST, step=0.0005, format="%.4f")
