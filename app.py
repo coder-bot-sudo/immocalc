@@ -182,6 +182,21 @@ def main() -> None:
         total_area = float(living_area) + float(commercial_area)
         st.caption(f"Gesamtfläche (berechnet): {total_area:.0f} m²")
 
+        st.subheader("Kaufpreis-Aufteilung")
+        commercial_price_share = 0.0
+        if has_commercial and total_area > 0:
+            default_share = float(commercial_area) / float(total_area) if float(total_area) > 0 else 0.0
+            commercial_price_share = st.number_input(
+                "Gewerbe-Anteil am Kaufpreis (0..1)",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(default_share),
+                step=0.01,
+                help="Annahme für die Aufteilung des Kaufpreises zwischen Wohnen und Gewerbe. Default = Flächenanteil.",
+            )
+        elif has_commercial:
+            st.caption("Gewerbe aktiv, aber Gesamtfläche = 0 → keine Aufteilung möglich.")
+
         st.subheader("Mieteingabe")
         rent_mode = st.radio(
             "Modus",
@@ -278,6 +293,12 @@ def main() -> None:
     living_area_f = float(living_area)
     commercial_area_f = float(commercial_area)
     total_area_f = float(total_area)
+
+    # Purchase price allocation (assumption)
+    commercial_share_f = float(commercial_price_share) if commercial_area_f > 0 else 0.0
+    commercial_share_f = min(1.0, max(0.0, commercial_share_f))
+    purchase_price_commercial = purchase_price_f * commercial_share_f
+    purchase_price_living = purchase_price_f - purchase_price_commercial
     rent_year = rent_month_f * 12.0
 
     payment_month_min = annuity_month(loan_f, interest_f, t_min)
@@ -325,11 +346,20 @@ def main() -> None:
 
     a1, a2, a3, a4 = st.columns(4)
     with a1:
-        st.metric("€/m² (Kaufpreis / Wohnfläche)", eur(safe_div(purchase_price_f, living_area_f)))
+        st.metric(
+            "€/m² Wohnen (Kaufpreis anteilig / Wohnfläche)",
+            eur(safe_div(purchase_price_living, living_area_f)),
+        )
     with a2:
-        st.metric("€/m² (Kaufpreis / Gesamtfläche)", eur(safe_div(purchase_price_f, total_area_f)))
+        if commercial_area_f > 0:
+            st.metric(
+                "€/m² Gewerbe (Kaufpreis anteilig / Gewerbefläche)",
+                eur(safe_div(purchase_price_commercial, commercial_area_f)),
+            )
+        else:
+            st.metric("€/m² Gewerbe", "–")
     with a3:
-        st.metric("Gesamtmiete €/m² (bez. auf Wohnfläche)", eur(safe_div(rent_month_f, living_area_f)))
+        st.metric("€/m² Gesamt (Kaufpreis / Gesamtfläche)", eur(safe_div(purchase_price_f, total_area_f)))
     with a4:
         st.metric("Gesamtmiete €/m² (bez. auf Gesamtfläche)", eur(safe_div(rent_month_f, total_area_f)))
 
@@ -342,13 +372,13 @@ def main() -> None:
         with b3:
             st.metric("Gesamtfläche (m²)", f"{total_area_f:.0f}")
         with b4:
-            st.metric("Gewerbe aktiv", "Ja")
+            st.metric("Gewerbe-Anteil Kaufpreis", pct(commercial_share_f))
     else:
         st.caption("Gewerbefläche ist deaktiviert (Toggle links).")
 
     st.caption(
-        "Hinweis: Ohne separate Angabe der Wohn- und Gewerbemiete kann nicht sauber die reine Wohnmiete €/m² bzw. Gewerbemiete €/m² berechnet werden. "
-        "Die Kennzahl oben teilt die *Gesamtkaltmiete* durch die jeweilige Fläche."
+        "Hinweis: Die €/m²-Kaufpreis-Kennzahlen für Wohnen/Gewerbe basieren auf der Annahme einer Kaufpreis-Aufteilung (links). "
+        "Ohne belegbare Kaufpreis-Aufteilung ist das nur eine Rechenannahme."
     )
 
     st.divider()
