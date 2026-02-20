@@ -173,25 +173,6 @@ def main() -> None:
             st.session_state.rent_num = v
             st.session_state.rent_slider = int(v)
 
-        st.slider(
-            "Kaltmiete (EUR/Monat)",
-            min_value=0,
-            max_value=12_000,
-            step=50,
-            key="rent_slider",
-            on_change=_sync_rent_from_slider,
-            disabled=bool(st.session_state.get("rent_mode", "total") == "sqm"),
-        )
-        st.number_input(
-            "Kaltmiete (direkt) (EUR/Monat)",
-            min_value=0.0,
-            max_value=12_000.0,
-            step=50.0,
-            key="rent_num",
-            on_change=_sync_rent_from_num,
-            disabled=bool(st.session_state.get("rent_mode", "total") == "sqm"),
-        )
-
         st.subheader("Flächen")
         living_area = st.number_input("Wohnfläche (m²)", min_value=0.0, value=DEFAULT_LIVING_AREA, step=5.0)
         has_commercial = st.toggle("Gewerbefläche vorhanden", value=True)
@@ -211,6 +192,24 @@ def main() -> None:
         )
         # Keep a simple internal flag to avoid string comparisons everywhere
         st.session_state.rent_mode = "sqm" if rent_mode.startswith("€/m²") else "total"
+
+        if st.session_state.rent_mode == "total":
+            st.slider(
+                "Kaltmiete (EUR/Monat)",
+                min_value=0,
+                max_value=12_000,
+                step=50,
+                key="rent_slider",
+                on_change=_sync_rent_from_slider,
+            )
+            st.number_input(
+                "Kaltmiete (direkt) (EUR/Monat)",
+                min_value=0.0,
+                max_value=12_000.0,
+                step=50.0,
+                key="rent_num",
+                on_change=_sync_rent_from_num,
+            )
 
         if st.session_state.rent_mode == "sqm":
             # Initialize defaults to keep consistency with the current total rent without inventing a split.
@@ -239,9 +238,8 @@ def main() -> None:
                 )
 
             rent_total_calc = float(living_area) * float(rent_res_sqm) + float(commercial_area) * float(rent_com_sqm)
-            # Update the total rent state so the rest of the app uses the computed rent.
-            st.session_state.rent_num = float(rent_total_calc)
-            st.session_state.rent_slider = int(round(rent_total_calc / 50.0) * 50.0)
+            # Do NOT write into widget keys (rent_num/rent_slider) here; Streamlit forbids that.
+            st.session_state.rent_total_calc = float(rent_total_calc)
             st.info(f"Berechnete Gesamtmiete: {eur(rent_total_calc)} / Monat")
 
         st.subheader("Finanzierung")
@@ -269,7 +267,10 @@ def main() -> None:
 
     # --- Core computations (minimal) ---
     purchase_price_f = float(st.session_state.purchase_price_num)
-    rent_month_f = float(st.session_state.rent_num)
+    if st.session_state.get("rent_mode", "total") == "sqm":
+        rent_month_f = float(st.session_state.get("rent_total_calc", 0.0))
+    else:
+        rent_month_f = float(st.session_state.rent_num)
     interest_f = float(interest)
     t_min = float(min(tilgung_min, tilgung_max))
     t_max = float(max(tilgung_min, tilgung_max))
