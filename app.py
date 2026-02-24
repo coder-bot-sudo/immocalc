@@ -641,13 +641,34 @@ def main() -> None:
             )
 
             st.subheader("Sanierungskosten")
-            renovation_costs = st.number_input(
-                "Sanierungskosten gesamt (EUR)",
-                min_value=0.0,
-                value=0.0,
-                step=10_000.0,
-                help="Kosten, die du als Sanierung/Modernisierung modellieren möchtest.",
+            ren_mode = st.radio(
+                "Eingabe Sanierungskosten",
+                options=["EUR", "% vom Kaufpreis"],
+                index=0,
+                horizontal=True,
+                help="Die Berechnung nutzt intern einen EUR-Betrag.",
             )
+            if ren_mode == "EUR":
+                renovation_costs = st.number_input(
+                    "Sanierungskosten gesamt (EUR)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10_000.0,
+                    help="Kosten, die du als Sanierung/Modernisierung modellieren möchtest.",
+                )
+            else:
+                ren_pct = st.number_input(
+                    "Sanierungskosten (% vom Kaufpreis)",
+                    min_value=0.0,
+                    max_value=500.0,
+                    value=0.0,
+                    step=0.5,
+                    format="%.2f",
+                    help="Beispiel: 10% = 0,10 × Kaufpreis.",
+                )
+                purchase_price_sidebar = float(st.session_state.get("purchase_price_num", 0.0))
+                renovation_costs = purchase_price_sidebar * float(ren_pct) / 100.0
+                st.info(f"Sanierungskosten berechnet: {eur(renovation_costs)}")
             renovation_eligible_pct = st.number_input(
                 "Davon Sanierungs-AfA-fähig (%)",
                 min_value=0.0,
