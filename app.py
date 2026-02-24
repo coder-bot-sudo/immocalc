@@ -18,6 +18,8 @@ Run
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import Literal
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -106,6 +108,240 @@ def amortization_schedule(
                     }
                 )
             break
+
+    return pd.DataFrame(rows)
+
+
+def amortization_schedule_detailed(
+    *,
+    principal: float,
+    interest: float,
+    initial_repayment: float,
+    years: int,
+) -> pd.DataFrame:
+    """Monthly amortization schedule including interest/principal payments."""
+    payment = annuity_month(principal, interest, initial_repayment)
+    months = int(years) * 12
+
+    remaining = float(principal)
+    rows: list[dict[str, float]] = []
+
+    for m in range(1, months + 1):
+        interest_payment = remaining * float(interest) / 12.0
+        principal_payment = payment - interest_payment
+        if principal_payment < 0:
+            principal_payment = 0.0
+        remaining = max(0.0, remaining - principal_payment)
+
+        rows.append(
+            {
+                "month": float(m),
+                "year": math.ceil(m / 12.0),
+                "payment": float(payment),
+                "interest_payment": float(interest_payment),
+                "principal_payment": float(principal_payment),
+                "remaining_debt": float(remaining),
+            }
+        )
+        if remaining <= 1e-9:
+            # Fully repaid: stop early
+            break
+
+    return pd.DataFrame(rows)
+
+
+def aggregate_yearly_amortization(monthly: pd.DataFrame, years: int) -> pd.DataFrame:
+    if monthly.empty:
+        return pd.DataFrame(
+            {
+                "year": [float(y) for y in range(1, years + 1)],
+                "interest": [0.0] * years,
+                "principal": [0.0] * years,
+                "payment": [0.0] * years,
+            }
+        )
+
+    g = (
+        monthly.groupby("year", as_index=False)
+        .agg(
+            interest=("interest_payment", "sum"),
+            principal=("principal_payment", "sum"),
+            payment=("payment", "sum"),
+        )
+        .astype({"year": float})
+    )
+
+    # Pad missing years
+    have = set(int(x) for x in g["year"].tolist())
+    rows: list[dict[str, float]] = g.to_dict(orient="records")
+    for y in range(1, years + 1):
+        if y not in have:
+            rows.append({"year": float(y), "interest": 0.0, "principal": 0.0, "payment": 0.0})
+    out = pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
+    return out
+
+
+@dataclass(frozen=True)
+class PurchaseCosts:
+    broker_rate: float
+    grunderwerbsteuer_rate: float
+    notar_rate: float
+    grundbuch_rate: float
+
+    def total_rate(self) -> float:
+        return self.broker_rate + self.grunderwerbsteuer_rate + self.notar_rate + self.grundbuch_rate
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def depreciation_linear(*, basis: float, rate: float, years: int) -> list[float]:
+    """Simple linear depreciation: constant amount per year.
+
+    Note: This is a simplified engine. German AfA has more nuances (e.g. pro-rata in year of acquisition).
+    """
+    basis = float(max(0.0, basis))
+    rate = float(max(0.0, rate))
+    if years <= 0 or basis == 0.0 or rate == 0.0:
+        return [0.0 for _ in range(max(0, years))]
+
+    annual = basis * rate
+    out: list[float] = []
+    remaining = basis
+    for _ in range(years):
+        a = min(annual, remaining)
+        out.append(a)
+        remaining -= a
+        if remaining <= 1e-9:
+            out.extend([0.0 for _ in range(years - len(out))])
+            break
+    return out
+
+
+def depreciation_schedule_percent(*, basis: float, percents: list[float], years: int) -> list[float]:
+    """Percent schedule where each year uses a percent of the original basis.
+
+    percents are provided as fractions (e.g. 0.09 for 9%).
+    """
+    basis = float(max(0.0, basis))
+    years = int(max(0, years))
+    out: list[float] = []
+    remaining = basis
+
+    for i in range(years):
+        p = float(percents[i]) if i < len(percents) else 0.0
+        p = max(0.0, p)
+        a = min(basis * p, remaining)
+        out.append(a)
+        remaining -= a
+        if remaining <= 1e-9:
+            out.extend([0.0 for _ in range(years - len(out))])
+            break
+    return out
+
+
+def shift_schedule(values: list[float], years: int, start_year: int) -> list[float]:
+    """Shift a schedule so that it starts at start_year (1-based)."""
+    years = int(max(0, years))
+    start_year = int(max(1, start_year))
+    out = [0.0 for _ in range(years)]
+    for i, v in enumerate(values):
+        y = start_year - 1 + i
+        if 0 <= y < years:
+            out[y] = float(v)
+    return out
+
+
+def prorate_year1(values: list[float], acquisition_month: int) -> list[float]:
+    """Prorate year 1 amount by remaining months from acquisition_month..12."""
+    if not values:
+        return values
+    m = int(acquisition_month)
+    m = min(12, max(1, m))
+    factor = (13 - m) / 12.0
+    out = list(values)
+    out[0] = float(out[0]) * float(factor)
+    return out
+
+
+def sanitize_percent_list(raw: str) -> list[float]:
+    """Parse a user string like '9,9,9,9,9,9,9,9,7,7,7,7' into fractions."""
+    s = (raw or "").strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.replace(";", ",").split(",") if p.strip()]
+    out: list[float] = []
+    for p in parts:
+        p2 = p.replace("%", "").replace(" ", "").replace(",", ".")
+        try:
+            val = float(p2) / 100.0
+        except ValueError:
+            continue
+        out.append(max(0.0, val))
+    return out
+
+
+def compute_tax_cashflow_de(
+    *,
+    years: int,
+    rent_year: float,
+    interest_year: float,
+    operating_costs_year: float,
+    depreciation_year: list[float],
+    marginal_tax_rate: float,
+    income_cap_year: float | None,
+) -> pd.DataFrame:
+    """Compute taxable result and after-tax cashflow.
+
+    Cashflow definition here (simplified):
+      before_tax = rent - interest - operating_costs
+      taxable = before_tax - depreciation
+      tax = taxable * tax_rate (negative taxable => tax refund)
+      after_tax = before_tax - tax
+
+    If income_cap_year is set, we cap the loss offset to that amount.
+    """
+    years = int(max(1, years))
+    tax_rate = _clamp01(marginal_tax_rate)
+    rent_year = float(rent_year)
+    interest_year = float(interest_year)
+    operating_costs_year = float(operating_costs_year)
+
+    rows: list[dict[str, float]] = []
+    cap = None
+    if income_cap_year is not None and float(income_cap_year) > 0:
+        cap = float(income_cap_year)
+
+    for y in range(1, years + 1):
+        dep = float(depreciation_year[y - 1]) if y - 1 < len(depreciation_year) else 0.0
+        before_tax = rent_year - interest_year - operating_costs_year
+        taxable = before_tax - dep
+
+        # Cap loss offset (very simplified; real DE tax law has additional constraints)
+        effective_taxable = taxable
+        if cap is not None:
+            if effective_taxable < 0:
+                effective_taxable = -min(abs(effective_taxable), cap)
+            else:
+                effective_taxable = min(effective_taxable, cap)
+
+        tax = effective_taxable * tax_rate
+        after_tax = before_tax - tax
+
+        rows.append(
+            {
+                "year": float(y),
+                "rent": rent_year,
+                "interest": interest_year,
+                "operating_costs": operating_costs_year,
+                "depreciation": dep,
+                "before_tax": before_tax,
+                "taxable": taxable,
+                "tax": tax,
+                "after_tax": after_tax,
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -292,49 +528,193 @@ def main() -> None:
             disabled=not appreciation_enabled,
         )
 
-        afa_enabled = st.toggle("Steuerliche Abschreibung (AfA) aktivieren", value=False)
-        afa_in_cashflow = st.toggle(
-            "AfA in Cashflow einrechnen",
-            value=False,
-            disabled=not afa_enabled,
+        st.subheader("Steuern / AfA (DE)")
+        tax_mode: Literal["Aus", "Einfach", "Erweitert (DE)"] = st.radio(
+            "Modus",
+            options=["Aus", "Einfach", "Erweitert (DE)"],
+            index=0,
+            key="tax_mode_ui",
+            help="Hinweis: Das ist ein Rechenmodell (keine Steuerberatung). Für Sonderfälle bitte mit Steuerberater abgleichen.",
         )
-        building_share_pct = st.number_input(
-            "Gebäudeanteil am Kaufpreis (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=1.0,
-            format="%.1f",
-            disabled=not afa_enabled,
-            help="Vereinfachung: AfA-Basis = Kaufpreis × Gebäudeanteil.",
-        )
-        afa_rate_pct = st.number_input(
-            "AfA-Satz p.a. (%)",
-            min_value=0.0,
-            max_value=10.0,
-            value=0.0,
-            step=0.1,
-            format="%.2f",
-            disabled=not afa_enabled,
-        )
-        tax_rate_pct = st.number_input(
-            "Grenzsteuersatz (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=1.0,
-            format="%.1f",
-            disabled=not afa_enabled,
-            help="Vereinfachung: Steuerwirkung = min(AfA, Einkommen) × Grenzsteuersatz.",
-        )
-        gross_income_year = st.number_input(
-            "Bruttoeinkommen p.a. (EUR)",
-            min_value=0.0,
-            value=0.0,
-            step=1_000.0,
-            disabled=not afa_enabled,
-            help="Vereinfachung: AfA wirkt nur bis zur Höhe des Einkommens.",
-        )
+
+        # --- simple mode: keep previous functionality ---
+        afa_in_cashflow = False
+        building_share_pct = 0.0
+        afa_rate_pct = 0.0
+        tax_rate_pct = 0.0
+        gross_income_year = 0.0
+
+        # --- extended mode inputs ---
+        de_tax_enabled = tax_mode != "Aus"
+        de_tax_extended = tax_mode == "Erweitert (DE)"
+
+        if tax_mode == "Einfach":
+            st.caption("Einfach: AfA-Basis = Kaufpreis × Gebäudeanteil; lineare AfA; Steuerwirkung über Grenzsteuersatz.")
+            afa_in_cashflow = st.toggle("Steuerwirkung in Cashflow einrechnen", value=False)
+            building_share_pct = st.number_input(
+                "Gebäudeanteil am Kaufpreis (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0,
+                format="%.1f",
+                help="Vereinfachung: AfA-Basis = Kaufpreis × Gebäudeanteil.",
+            )
+            afa_rate_pct = st.number_input(
+                "AfA-Satz p.a. (%)",
+                min_value=0.0,
+                max_value=10.0,
+                value=0.0,
+                step=0.1,
+                format="%.2f",
+            )
+            tax_rate_pct = st.number_input(
+                "Grenzsteuersatz (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0,
+                format="%.1f",
+            )
+            gross_income_year = st.number_input(
+                "Einkommen-Cap p.a. (EUR) (optional)",
+                min_value=0.0,
+                value=0.0,
+                step=1_000.0,
+                help="Optional: cappt Verlustverrechnung (sehr vereinfacht). 0 = kein Cap.",
+            )
+
+        # Extended DE mode: allocation into land / old building / renovation
+        land_share_pct = 0.0
+        purchase_costs = PurchaseCosts(0.0, 0.0, 0.0, 0.0)
+        operating_costs_year = 0.0
+        building_afa_rate_pct = 0.0
+        renovation_costs = 0.0
+        renovation_afa_scheme: Literal["§7h/§7i (9%×8 + 7%×4)", "Benutzerdefiniert"] = "§7h/§7i (9%×8 + 7%×4)"
+        renovation_custom = ""
+        renovation_eligible_pct = 100.0
+        tax_rate_de_pct = 0.0
+        income_cap_de_year = 0.0
+        acquisition_month = 1
+        renovation_start_year = 1
+
+        if de_tax_extended:
+            st.caption(
+                "Erweitert: Aufteilung in Grund und Boden (nicht abschreibbar), Altbausubstanz/Gebäude (lineare AfA) und Sanierungskosten (Sanierungs-AfA-Schema)."
+            )
+
+            st.subheader("Aufteilung Kauf (Basis)")
+            land_share_pct = st.number_input(
+                "Anteil Grund & Boden (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=20.0,
+                step=1.0,
+                format="%.1f",
+                help="Vereinfachte Eingabe. In der Praxis oft über Bodenrichtwert/Arbeitshilfen ermittelt.",
+            )
+
+            st.subheader("Kaufnebenkosten (Rate vom Kaufpreis)")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                broker_rate_pct = st.number_input("Makler (%)", min_value=0.0, max_value=20.0, value=3.57, step=0.01, format="%.2f")
+                grunderwerbsteuer_pct = st.number_input("GrESt (%)", min_value=0.0, max_value=10.0, value=3.5, step=0.1, format="%.2f")
+            with col_b:
+                notar_pct = st.number_input("Notar (%)", min_value=0.0, max_value=10.0, value=1.5, step=0.1, format="%.2f")
+                grundbuch_pct = st.number_input("Grundbuch (%)", min_value=0.0, max_value=10.0, value=0.5, step=0.1, format="%.2f")
+            purchase_costs = PurchaseCosts(
+                broker_rate=float(broker_rate_pct) / 100.0,
+                grunderwerbsteuer_rate=float(grunderwerbsteuer_pct) / 100.0,
+                notar_rate=float(notar_pct) / 100.0,
+                grundbuch_rate=float(grundbuch_pct) / 100.0,
+            )
+
+            st.subheader("Gebäude-AfA (Altbausubstanz)")
+            building_afa_rate_pct = st.number_input(
+                "Lineare Gebäude-AfA p.a. (%)",
+                min_value=0.0,
+                max_value=10.0,
+                value=2.0,
+                step=0.1,
+                format="%.2f",
+                help="Vereinfachung: konstante lineare AfA über die Jahre. (z.B. 2% entspricht 50 Jahre).",
+            )
+
+            st.subheader("Sanierungskosten")
+            renovation_costs = st.number_input(
+                "Sanierungskosten gesamt (EUR)",
+                min_value=0.0,
+                value=0.0,
+                step=10_000.0,
+                help="Kosten, die du als Sanierung/Modernisierung modellieren möchtest.",
+            )
+            renovation_eligible_pct = st.number_input(
+                "Davon Sanierungs-AfA-fähig (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=100.0,
+                step=1.0,
+                format="%.1f",
+                help="Falls nur ein Teil nach Sonder-AfA läuft, den Rest ggf. als lineare AfA behandeln (hier vereinfacht: Rest wird zur Gebäudebasis addiert).",
+            )
+            renovation_afa_scheme = st.radio(
+                "Sanierungs-AfA-Schema",
+                options=["§7h/§7i (9%×8 + 7%×4)", "Benutzerdefiniert"],
+                index=0,
+                help="Klassisches Schema mit 100% über 12 Jahre (9% für 8 Jahre + 7% für 4 Jahre).",
+            )
+            if renovation_afa_scheme == "Benutzerdefiniert":
+                renovation_custom = st.text_input(
+                    "Jahres-% (kommagetrennt)",
+                    value="9,9,9,9,9,9,9,9,7,7,7,7",
+                    help="Beispiel: 9,9,9,9,9,9,9,9,7,7,7,7 (Summe 100%).",
+                )
+                perc_tmp = sanitize_percent_list(renovation_custom)
+                perc_sum = sum(perc_tmp) * 100.0
+                if perc_tmp:
+                    if abs(perc_sum - 100.0) > 0.5:
+                        st.warning(f"Dein Schema summiert sich auf {perc_sum:.1f}% (nicht 100%).")
+                    else:
+                        st.info(f"Schema-Summe: {perc_sum:.1f}%")
+
+            acquisition_month = st.selectbox(
+                "Anschaffungsmonat (AfA anteilig im Jahr 1)",
+                options=list(range(1, 13)),
+                index=0,
+                help="Vereinfachung: AfA im Anschaffungsjahr wird monatsgenau anteilig gerechnet (Monat..Dezember).",
+            )
+            renovation_start_year = st.number_input(
+                "Sanierungs-AfA Startjahr (1=sofort)",
+                min_value=1,
+                max_value=60,
+                value=1,
+                step=1,
+                help="Vereinfachung: Sonder-AfA startet ab diesem Jahr (z.B. nach Fertigstellung).",
+            )
+
+            st.subheader("Laufende Kosten & Steuersatz")
+            operating_costs_year = st.number_input(
+                "Nicht-umlagefähige Kosten p.a. (EUR)",
+                min_value=0.0,
+                value=0.0,
+                step=1_000.0,
+                help="Vereinfachung: Verwaltung, Instandhaltung, Leerstand, etc. (sofern nicht umgelegt).",
+            )
+            tax_rate_de_pct = st.number_input(
+                "Grenzsteuersatz (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=42.0,
+                step=1.0,
+                format="%.1f",
+            )
+            income_cap_de_year = st.number_input(
+                "Einkommen-Cap p.a. (EUR) (optional)",
+                min_value=0.0,
+                value=0.0,
+                step=1_000.0,
+                help="Optional: cappt Verlustverrechnung (sehr vereinfacht). 0 = kein Cap.",
+            )
 
         years = int(
             st.number_input("Zeithorizont (Jahre)", min_value=1, max_value=60, value=30, step=1)
@@ -369,22 +749,130 @@ def main() -> None:
 
     appreciation_rate = (float(appreciation_pct) / 100.0) if appreciation_enabled else 0.0
 
-    tax_shield_year = 0.0
-    afa_year = 0.0
-    if (
-        afa_enabled
-        and afa_in_cashflow
-        and building_share_pct > 0
-        and afa_rate_pct > 0
-        and tax_rate_pct > 0
-    ):
-        building_share = float(building_share_pct) / 100.0
-        afa_rate = float(afa_rate_pct) / 100.0
-        tax_rate = float(tax_rate_pct) / 100.0
-        afa_year = purchase_price_f * building_share * afa_rate
-        income_cap = float(gross_income_year) if gross_income_year > 0 else 0.0
-        taxable_base = min(afa_year, income_cap) if income_cap > 0 else 0.0
-        tax_shield_year = taxable_base * tax_rate
+    # --- Tax / AfA computations ---
+    tax_table: pd.DataFrame | None = None
+    tax_table_min: pd.DataFrame | None = None
+    tax_table_max: pd.DataFrame | None = None
+    de_allocation: dict[str, float] | None = None
+    depreciation_total_year: list[float] = [0.0 for _ in range(years)]
+
+    # Simple AfA mode (keeps prior behavior): treat AfA as a positive cashflow shield (approx)
+    simple_tax_shield_year = 0.0
+    simple_afa_year = 0.0
+    if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Einfach"):
+        if (
+            afa_in_cashflow
+            and building_share_pct > 0
+            and afa_rate_pct > 0
+            and tax_rate_pct > 0
+        ):
+            building_share = float(building_share_pct) / 100.0
+            afa_rate = float(afa_rate_pct) / 100.0
+            tax_rate = float(tax_rate_pct) / 100.0
+            simple_afa_year = purchase_price_f * building_share * afa_rate
+            income_cap = float(gross_income_year) if gross_income_year > 0 else 0.0
+            taxable_base = min(simple_afa_year, income_cap) if income_cap > 0 else simple_afa_year
+            simple_tax_shield_year = taxable_base * tax_rate
+        depreciation_total_year = depreciation_linear(
+            basis=purchase_price_f * (float(building_share_pct) / 100.0),
+            rate=float(afa_rate_pct) / 100.0,
+            years=years,
+        )
+
+    # Extended DE mode: allocation and schedules
+    if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Erweitert (DE)"):
+        land_share = _clamp01(float(land_share_pct) / 100.0)
+        total_acq = purchase_price_f * (1.0 + purchase_costs.total_rate())
+        land_basis = total_acq * land_share
+        building_basis = total_acq - land_basis
+
+        ren_total = float(renovation_costs)
+        ren_eligible = ren_total * _clamp01(float(renovation_eligible_pct) / 100.0)
+        ren_rest = max(0.0, ren_total - ren_eligible)
+
+        building_basis_total = max(0.0, building_basis + ren_rest)
+
+        de_allocation = {
+            "total_acq": float(total_acq),
+            "purchase_costs": float(total_acq - purchase_price_f),
+            "land_basis": float(land_basis),
+            "building_basis": float(building_basis),
+            "building_basis_total": float(building_basis_total),
+            "renovation_total": float(ren_total),
+            "renovation_eligible": float(ren_eligible),
+            "renovation_rest": float(ren_rest),
+        }
+
+        building_dep = depreciation_linear(
+            basis=building_basis_total,
+            rate=float(building_afa_rate_pct) / 100.0,
+            years=years,
+        )
+
+        if renovation_afa_scheme == "§7h/§7i (9%×8 + 7%×4)":
+            perc = [0.09] * 8 + [0.07] * 4
+        else:
+            perc = sanitize_percent_list(renovation_custom)
+
+        renovation_dep_raw = depreciation_schedule_percent(basis=ren_eligible, percents=perc, years=years)
+        renovation_dep = shift_schedule(renovation_dep_raw, years=years, start_year=int(renovation_start_year))
+
+        # Prorate year 1 AfA by acquisition month (simplified)
+        building_dep = prorate_year1(building_dep, int(acquisition_month))
+        renovation_dep = prorate_year1(renovation_dep, int(acquisition_month))
+
+        depreciation_total_year = [float(building_dep[i] + renovation_dep[i]) for i in range(years)]
+
+        # Build yearly interest/principal from real amortization for both tilgung scenarios
+        sched_m_min = amortization_schedule_detailed(principal=loan_f, interest=interest_f, initial_repayment=t_min, years=years)
+        sched_m_max = amortization_schedule_detailed(principal=loan_f, interest=interest_f, initial_repayment=t_max, years=years)
+        y_min = aggregate_yearly_amortization(sched_m_min, years=years)
+        y_max = aggregate_yearly_amortization(sched_m_max, years=years)
+
+        def _build_tax_table(y_amort: pd.DataFrame) -> pd.DataFrame:
+            rows: list[dict[str, float]] = []
+            tax_rate = _clamp01(float(tax_rate_de_pct) / 100.0)
+            cap = float(income_cap_de_year) if float(income_cap_de_year) > 0 else None
+
+            for i in range(years):
+                year_no = int(i + 1)
+                interest_y = float(y_amort.loc[i, "interest"]) if i < len(y_amort) else 0.0
+                principal_y = float(y_amort.loc[i, "principal"]) if i < len(y_amort) else 0.0
+                dep = float(depreciation_total_year[i])
+
+                before_tax = rent_year - interest_y - float(operating_costs_year)
+                taxable = before_tax - dep
+                effective_taxable = taxable
+                if cap is not None:
+                    if effective_taxable < 0:
+                        effective_taxable = -min(abs(effective_taxable), cap)
+                    else:
+                        effective_taxable = min(effective_taxable, cap)
+                tax = effective_taxable * tax_rate
+
+                # Cashflow after financing: rent - operating - interest - principal - tax
+                after_fin = rent_year - float(operating_costs_year) - interest_y - principal_y - tax
+
+                rows.append(
+                    {
+                        "year": float(year_no),
+                        "rent": float(rent_year),
+                        "operating_costs": float(operating_costs_year),
+                        "interest": interest_y,
+                        "principal": principal_y,
+                        "depreciation": dep,
+                        "taxable": taxable,
+                        "tax": tax,
+                        "cashflow_after_tax_fin": after_fin,
+                    }
+                )
+
+            return pd.DataFrame(rows)
+
+        tax_table_min = _build_tax_table(y_min)
+        tax_table_max = _build_tax_table(y_max)
+        # Keep a single table for older UI blocks (first scenario)
+        tax_table = tax_table_min
 
     # capital development schedules
     sched_min = amortization_schedule(
@@ -420,12 +908,18 @@ def main() -> None:
 
     with k4:
         st.metric("Annuität/Monat (Tilgung max)", eur(payment_month_max))
-        if afa_enabled and afa_in_cashflow:
-            cashflow_month_min_adj = cashflow_month_min + (tax_shield_year / 12.0)
-            cashflow_month_max_adj = cashflow_month_max + (tax_shield_year / 12.0)
+        if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Einfach") and afa_in_cashflow:
+            cashflow_month_min_adj = cashflow_month_min + (simple_tax_shield_year / 12.0)
+            cashflow_month_max_adj = cashflow_month_max + (simple_tax_shield_year / 12.0)
+            st.metric("Cashflow/Monat inkl. Steuerwirkung (min .. max)", f"{eur(cashflow_month_min_adj)} .. {eur(cashflow_month_max_adj)}")
+        elif ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Erweitert (DE)") and tax_table is not None:
+            # Year-1 after-tax cashflow approximation
+            # Here: cashflow_after_tax_fin already includes principal (i.e., after financing)
+            cashflow_month_min_tax = float(tax_table_min.loc[0, "cashflow_after_tax_fin"]) / 12.0 if tax_table_min is not None else float("nan")
+            cashflow_month_max_tax = float(tax_table_max.loc[0, "cashflow_after_tax_fin"]) / 12.0 if tax_table_max is not None else float("nan")
             st.metric(
-                "Cashflow/Monat inkl. AfA (min .. max)",
-                f"{eur(cashflow_month_min_adj)} .. {eur(cashflow_month_max_adj)}",
+                "Cashflow/Monat nach Steuer (min .. max)",
+                f"{eur(cashflow_month_min_tax)} .. {eur(cashflow_month_max_tax)}",
             )
         else:
             st.metric("Cashflow/Monat (min .. max)", f"{eur(cashflow_month_min)} .. {eur(cashflow_month_max)}")
@@ -474,6 +968,21 @@ def main() -> None:
     )
 
     st.divider()
+
+    if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Erweitert (DE)") and (de_allocation is not None):
+        st.subheader("Aufteilung: Grund · Altbausubstanz · Sanierung (DE, vereinfacht)")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Grund & Boden (nicht AfA)", eur(de_allocation["land_basis"]))
+        with c2:
+            st.metric("Altbau/Gebäude-Basis", eur(de_allocation["building_basis"]))
+        with c3:
+            st.metric("Sanierung (Sonder-AfA Basis)", eur(de_allocation["renovation_eligible"]))
+        with c4:
+            st.metric("Sanierung (Rest → Gebäude)", eur(de_allocation["renovation_rest"]))
+        st.caption(
+            f"Kaufnebenkosten (modelliert): {eur(de_allocation['purchase_costs'])} | Anschaffung gesamt: {eur(de_allocation['total_acq'])}"
+        )
 
     left, right = st.columns([1.05, 0.95])
 
@@ -612,16 +1121,17 @@ def main() -> None:
             )
         )
 
-        if afa_enabled and afa_in_cashflow and tax_shield_year > 0:
-            cum_cf_min_tax = years_axis * (cf_year_min + tax_shield_year)
-            cum_cf_max_tax = years_axis * (cf_year_max + tax_shield_year)
+        # Simple mode: approximate tax shield as constant positive yearly add-on
+        if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Einfach") and afa_in_cashflow and simple_tax_shield_year > 0:
+            cum_cf_min_tax = years_axis * (cf_year_min + simple_tax_shield_year)
+            cum_cf_max_tax = years_axis * (cf_year_max + simple_tax_shield_year)
 
             fig3.add_trace(
                 go.Scatter(
                     x=years_axis,
                     y=cum_cf_min_tax,
                     mode="lines",
-                    name=f"Kum. Cashflow inkl. AfA (Tilgung min)",
+                    name="Kum. Cashflow inkl. Steuerwirkung (Tilgung min)",
                     line=dict(dash="dot"),
                 )
             )
@@ -630,20 +1140,70 @@ def main() -> None:
                     x=years_axis,
                     y=cum_cf_max_tax,
                     mode="lines",
-                    name=f"Kum. Cashflow inkl. AfA (Tilgung max)",
+                    name="Kum. Cashflow inkl. Steuerwirkung (Tilgung max)",
                     line=dict(dash="dot"),
                 )
             )
             st.caption(
-                "AfA (vereinfacht): "
-                f"{eur(afa_year)} p.a. | Steuerwirkung (min(AfA, Einkommen)×Grenzsteuersatz): {eur(tax_shield_year)} p.a."
+                "Einfacher AfA-Modus (vereinfacht): "
+                f"AfA {eur(simple_afa_year)} p.a. | Steuerwirkung {eur(simple_tax_shield_year)} p.a."
+            )
+
+        # Extended DE mode: year-by-year taxes with AfA split; plot cumulative after-tax cashflow (annual points)
+        if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Erweitert (DE)") and (tax_table_min is not None) and (tax_table_max is not None):
+            y_idx = tax_table_min["year"].to_numpy()
+            cum_min = tax_table_min["cashflow_after_tax_fin"].cumsum().to_numpy()
+            cum_max = tax_table_max["cashflow_after_tax_fin"].cumsum().to_numpy()
+
+            fig3.add_trace(
+                go.Scatter(
+                    x=y_idx,
+                    y=cum_min,
+                    mode="lines+markers",
+                    name="Kum. Cashflow nach Steuer (Tilgung min)",
+                    line=dict(dash="dot"),
+                )
+            )
+            fig3.add_trace(
+                go.Scatter(
+                    x=y_idx,
+                    y=cum_max,
+                    mode="lines+markers",
+                    name="Kum. Cashflow nach Steuer (Tilgung max)",
+                    line=dict(dash="dot"),
+                )
             )
 
         cashflow_title = "Kumulierter Cashflow (ohne Kosten)"
-        if afa_enabled and afa_in_cashflow:
-            cashflow_title = "Kumulierter Cashflow (ohne Kosten; AfA optional)"
+        if ("tax_mode_ui" in st.session_state) and st.session_state.tax_mode_ui in ("Einfach", "Erweitert (DE)"):
+            cashflow_title = "Kumulierter Cashflow (Steuern optional)"
         fig3.update_layout(xaxis_title="Jahre", yaxis_title="EUR", title=cashflow_title)
         st.plotly_chart(fig3, width="stretch")
+
+        if ("tax_mode_ui" in st.session_state) and (st.session_state.tax_mode_ui == "Erweitert (DE)"):
+            st.subheader("Steuer-/AfA-Übersicht (vereinfachtes Modell)")
+            st.caption(
+                "Die Tabelle zeigt eine vereinfachte Steuerrechnung mit AfA-Aufteilung: Grund & Boden (0 AfA), Gebäude/Altbau (linear), Sanierung (Schema). "
+                "Zinsen/Tilgung basieren auf dem Tilgungsplan (jährlich aggregiert)."
+            )
+            if (tax_table_min is not None) and (tax_table_max is not None):
+                tab_min, tab_max = st.tabs(["Tilgung min", "Tilgung max"])
+                show_cols = [
+                    "year",
+                    "rent",
+                    "operating_costs",
+                    "interest",
+                    "principal",
+                    "depreciation",
+                    "taxable",
+                    "tax",
+                    "cashflow_after_tax_fin",
+                ]
+                with tab_min:
+                    st.dataframe(tax_table_min[show_cols], width="stretch")
+                with tab_max:
+                    st.dataframe(tax_table_max[show_cols], width="stretch")
+
 
 
 if __name__ == "__main__":
